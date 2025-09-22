@@ -29,7 +29,7 @@ app = FastAPI()  # Your existing FastAPI app
 # Add this immediately after creating `app`
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # your frontend URL
+    allow_origins=["*"],  # Allow all origins for local development
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,7 +40,8 @@ llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
 
 #Define AgentState
 class AgentState(TypedDict):
-    messages: Sequence[BaseMessage]
+    # This annotation tells LangGraph to append new messages to the existing list
+    messages: Annotated[Sequence[BaseMessage], add_messages]
     preferences_text: str  # Stores the full collected text from frontend
 
 # Define the request body
@@ -139,9 +140,10 @@ def call_llm(state: AgentState) -> AgentState:
     Calls LLM to process the user's preferences text
     and decide which tools to call.
     """
-    messages = list(state['messages'])
+    # The system prompt can be added at the beginning of the chat session
+    # For simplicity here, we ensure it's present before calling the LLM
+    messages = state['messages']
     
-    # System prompt explaining the AI's behavior
     system_prompt = """
     You are an intelligent AI travel assistant for tourists in Sri Lanka.
     You have access to the following tools:
@@ -150,17 +152,19 @@ def call_llm(state: AgentState) -> AgentState:
     - food_tool
     - activity_tool
     - weather_tool
-    Based on user preferences, decide which tools are needed and prepare queries for them.
+    Based on the full conversation history, decide if a tool is needed or if you can answer the user.
+    If you have tool results, synthesize them into a final answer.
     """
     
-    messages = [SystemMessage(content=system_prompt)] + messages
-    messages.append(HumanMessage(content=state['preferences_text']))
-    
+    # Check if system prompt is already there to avoid adding it multiple times
+    if not isinstance(messages[0], SystemMessage):
+        messages = [SystemMessage(content=system_prompt)] + messages
+
     # Call LLM
     message = llm.invoke(messages)
     
-    # Here we assume message.tool_calls contains the tools to invoke (LangChain-like)
-    return {'messages': [message], 'preferences_text': state['preferences_text']}
+    # The 'add_messages' reducer will append this new message to the state
+    return {'messages': [message]}
 
 
 #Tool Execution Function 
@@ -185,7 +189,7 @@ def take_action(state: AgentState) -> AgentState:
             result = f"Tool {tool_name} not found."
         results.append(ToolMessage(tool_call_id=t.get('id', ""), name=tool_name, content=str(result)))
     
-    return {'messages': results, 'preferences_text': state['preferences_text']}
+    return {'messages': results}
 
 workflow = StateGraph(AgentState)
 workflow.add_node("llm", call_llm)
@@ -226,12 +230,12 @@ async def process_preferences(session_id: str, request: PreferencesRequest):
     return {"result": result['messages'][-1].content}
 
 
-# Then at the bottom, for testing:
-test_preferences = "Beach, Eco-Lodge, Local Sri Lankan, Hiking & Nature Trails"
+# # Then at the bottom, for testing:
+# test_preferences = "Beach, Eco-Lodge, Local Sri Lankan, Hiking & Nature Trails"
 
-result = compiled_workflow.invoke({
-    "messages": [HumanMessage(content="Process preferences")],
-    "preferences_text": test_preferences
-})
+# result = compiled_workflow.invoke({
+#     "messages": [HumanMessage(content="Process preferences")],
+#     "preferences_text": test_preferences
+# })
 
-print(result)  # see the full output structure
+# print(result)  # see the full output structure
